@@ -1,4 +1,5 @@
 
+
 const MODEL = "@cf/google/gemma-4-26b-a4b-it";
 
 const cors = {
@@ -12,7 +13,8 @@ function json(data, status = 200) {
     status,
     headers: {
       ...cors,
-      "Content-Type": "application/json"
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store"
     }
   });
 }
@@ -30,32 +32,71 @@ function getCurrentTime() {
   };
 }
 
+function getSystemPrompt(clock) {
+  return `
+You are TEJA AI STUDIO, an intelligent and helpful AI assistant.
+
+CURRENT DATE AND TIME:
+UTC: ${clock.utc}
+India: ${clock.india}
+Timezone: Asia/Kolkata
+
+IMPORTANT RULES:
+
+1. Use the supplied current date when asked about today's date.
+2. Never invent dates, live events, prices, news, weather or statistics.
+3. You do not have live web search in this version.
+4. If a question requires live internet information, explain that limitation honestly.
+5. Answer clearly, accurately and helpfully.
+6. Follow the user's language and communication style.
+7. Never claim to have performed an action you did not perform.
+8. Be friendly, natural and conversational.
+9. Your name is TEJA AI STUDIO.
+10. When an image is provided, carefully analyze its visible contents.
+`;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
+    // CORS preflight.
     if (request.method === "OPTIONS") {
-      return new Response(null, { headers: cors });
+      return new Response(null, {
+        status: 204,
+        headers: cors
+      });
     }
 
-    if (url.pathname === "/api/health") {
+    // Backend health check.
+    if (
+      url.pathname === "/api/health" &&
+      request.method === "GET"
+    ) {
       return json({
         status: "ok",
         app: "TEJA AI STUDIO",
         ai: !!env.AI,
         model: MODEL,
         liveClock: true,
-        streaming: true
+        streaming: true,
+        vision: true
       });
     }
 
-    if (url.pathname === "/api/chat" && request.method === "POST") {
+    // AI chat endpoint.
+    if (
+      url.pathname === "/api/chat" &&
+      request.method === "POST"
+    ) {
       try {
-        const body = await request.json();
-
         if (!env.AI) {
-          return json({ error: "AI binding missing" }, 500);
+          return json({
+            error: "Cloudflare AI binding is missing."
+          }, 500);
         }
+
+        const body = await request.json();
 
         const message = String(
           body.message || body.prompt || ""
@@ -65,37 +106,44 @@ export default {
           ? body.history
           : [];
 
-        if (!message && !history.length) {
-          return json({ error: "Message is empty" }, 400);
+        const image = body.image;
+
+        if (!message && !image) {
+          return json({
+            error: "Please enter a message or upload an image."
+          }, 400);
+        }
+
+        // Validate image input.
+        if (image) {
+          const allowedTypes = [
+            "image/jpeg",
+            "image/png",
+            "image/webp"
+          ];
+
+          if (
+            !image.data ||
+            !allowedTypes.includes(image.mimeType)
+          ) {
+            return json({
+              error: "Invalid image. Use JPG, PNG or WEBP."
+            }, 400);
+          }
+
+          if (image.data.length > 11 * 1024 * 1024) {
+            return json({
+              error: "Image is too large. Please upload a smaller image."
+            }, 413);
+          }
         }
 
         const clock = getCurrentTime();
 
-        const systemPrompt = `
-You are TEJA AI STUDIO, an intelligent and honest AI assistant.
-
-CURRENT DATE AND TIME:
-UTC: ${clock.utc}
-India: ${clock.india}
-India timezone: Asia/Kolkata
-
-IMPORTANT RULES:
-1. Always use the supplied current date when asked today's date.
-2. Never claim the date is May 14, 2024 or another outdated date.
-3. Never invent current events, live prices, news, weather or statistics.
-4. You do not have live internet search unless a search tool is explicitly provided.
-5. If information requires live internet access, honestly explain this limitation.
-6. Give accurate, helpful and detailed answers.
-7. Follow the user's language and communication style.
-8. Never pretend to have performed actions you did not perform.
-9. Be friendly, natural and conversational.
-10. Your name is TEJA AI STUDIO.
-`;
-
         const messages = [
           {
             role: "system",
-            content: systemPrompt
+            content: getSystemPrompt(clock)
           },
 
           ...history
@@ -104,22 +152,63 @@ IMPORTANT RULES:
             )
             .slice(-12)
             .map(item => ({
-              role: item.role === "model" ? "assistant" : item.role,
-              content: String(item.content || item.text || "")
+              role:
+                item.role === "model"
+                  ? "assistant"
+                  : item.role,
+              content: String(
+                item.content || item.text || ""
+              ).slice(0, 12000)
             }))
-            .filter(item => item.content.trim()),
-
-          ...(message ? [{
-            role: "user",
-            content: message
-          }] : [])
+            .filter(item => item.content.trim())
         ];
 
+        // Build the current user message.
+        if (image) {
+          const content = [];
+
+          if (message) {
+            content.push({
+              type: "text",
+              text: message
+            });
+          } else {
+            content.push({
+              type: "text",
+              text: "Please carefully describe and analyze this image."
+            });
+          }
+
+          content.push({
+            type: "image_url",
+            image_url: {
+              url: `data:${image.mimeType};base64,${image.data}`
+            }
+          });
+
+          messages.push({
+            role: "user",
+            content
+          });
+        } else {
+          messages.push({
+            role: "user",
+            content: message
+          });
+        }
+
+        // Request incremental AI output.
         const stream = await env.AI.run(MODEL, {
           messages,
           max_tokens: 1200,
           stream: true
         });
+
+        if (!stream) {
+          return json({
+            error: "AI did not return a response stream."
+          }, 502);
+        }
 
         return new Response(stream, {
           status: 200,
@@ -132,14 +221,15 @@ IMPORTANT RULES:
         });
 
       } catch (error) {
-        console.error("Chat error:", error);
+        console.error("TEJA AI error:", error);
 
         return json({
-          error: error.message || "AI request failed"
+          error: error.message || "AI request failed."
         }, 500);
       }
     }
 
+    // Serve the React application.
     if (env.ASSETS) {
       return env.ASSETS.fetch(request);
     }
@@ -151,6 +241,5 @@ IMPORTANT RULES:
   }
 };
 
- 
-
-          
+        
+    
