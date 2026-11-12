@@ -2,22 +2,32 @@
 
 const MODEL = "@cf/google/gemma-4-26b-a4b-it";
 
+const cors = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type"
+};
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      ...cors,
+      "Content-Type": "application/json"
+    }
+  });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") {
-      return new Response(null, {
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type"
-        }
-      });
+      return new Response(null, { headers: cors });
     }
 
     if (url.pathname === "/api/health") {
-      return Response.json({
+      return json({
         status: "ok",
         app: "TEJA AI STUDIO",
         ai: !!env.AI
@@ -28,75 +38,72 @@ export default {
       try {
         const body = await request.json();
 
-        const messages = Array.isArray(body.messages)
-          ? body.messages
-          : [
-              {
-                role: "user",
-                content: body.message || body.prompt || ""
-              }
-            ];
-
-        if (!messages.length) {
-          return Response.json(
-            { error: "Please enter a message." },
-            { status: 400 }
-          );
+        if (!env.AI) {
+          return json({ error: "AI binding missing" }, 500);
         }
 
-        if (!env.AI) {
-          throw new Error("Cloudflare AI binding is missing.");
+        const history = Array.isArray(body.history)
+          ? body.history
+          : [];
+
+        const messages = history.map(item => ({
+          role: item.role === "model" ? "assistant" : item.role,
+          content: item.content || item.text || ""
+        })).filter(item =>
+          ["user", "assistant", "system"].includes(item.role)
+        );
+
+        const message = body.message || body.prompt || "";
+
+        if (message.trim()) {
+          messages.push({
+            role: "user",
+            content: message
+          });
+        }
+
+        if (!messages.length) {
+          return json({ error: "Message is empty" }, 400);
         }
 
         const result = await env.AI.run(MODEL, {
           messages,
-          max_completion_tokens: 1200,
-          chat_template_kwargs: {
-            enable_thinking: false
-          }
+          max_tokens: 1200
         });
 
         let answer =
-          result?.choices?.[0]?.message?.content ??
-          result?.response ??
-          result?.result?.response ??
-          result?.output_text ??
+          result?.response ||
+          result?.choices?.[0]?.message?.content ||
+          result?.output_text ||
           "";
 
         if (Array.isArray(answer)) {
-          answer = answer
-            .map(item => typeof item === "string"
-              ? item
-              : item?.text || "")
-            .join("");
+          answer = answer.map(x =>
+            typeof x === "string" ? x : x?.text || ""
+          ).join("");
         }
 
         if (typeof answer !== "string" || !answer.trim()) {
-          console.error("Unexpected AI result:", JSON.stringify(result));
-
-          return Response.json(
-            {
-              error: "AI generated no text. Please try again.",
-              debug: result
-            },
-            { status: 502 }
-          );
+          console.error("Empty AI result:", JSON.stringify(result));
+          return json({
+            error: "AI returned empty text",
+            debug: result
+          }, 502);
         }
 
-        return Response.json({
-          response: answer.trim(),
+        // IMPORTANT: Frontend expects "text"
+        return json({
+          text: answer.trim(),
+          sources: [],
           success: true
         });
 
       } catch (error) {
-        console.error("AI request failed:", error);
+        console.error("Chat error:", error);
 
-        return Response.json(
-          {
-            error: error.message || "AI request failed"
-          },
-          { status: 500 }
-        );
+        return json({
+          error: error.message || "AI request failed"
+        }, 500);
       }
     }
 
@@ -107,3 +114,4 @@ export default {
     return new Response("Not Found", { status: 404 });
   }
 };
+
