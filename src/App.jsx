@@ -153,9 +153,107 @@ export default function App() {
     reader.readAsDataURL(file)
   }
 
-  async function sendMessage() {
-    const question = message.trim()
-    if ((!question && !image) || busy) return
+  
+async function sendMessage() {
+  const question = message.trim()
+
+  if ((!question && !image) || busy) return
+
+  const userMessage = {
+    role: 'user',
+    text: question || 'Please describe this image.',
+    preview: image?.preview
+  }
+
+  const previousHistory = messages
+    .filter(m => ['user', 'model'].includes(m.role))
+    .slice(-12)
+    .map(m => ({ role: m.role, text: m.text }))
+
+  const currentImage = image
+
+  setMessages(old => [
+    ...old,
+    userMessage,
+    { role: 'model', text: '', sources: [] }
+  ])
+
+  setMessage('')
+  setBusy(true)
+  setError('')
+  setImage(null)
+
+  function updateAnswer(text) {
+    setMessages(old => {
+      const updated = [...old]
+      const last = updated.length - 1
+
+      updated[last] = {
+        ...updated[last],
+        text
+      }
+
+      return updated
+    })
+  }
+
+  try {
+    const response = await fetch('/api/chat', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        message: userMessage.text,
+        history: previousHistory,
+        image: currentImage
+          ? {
+              data: currentImage.data,
+              mimeType: currentImage.mimeType
+            }
+          : undefined,
+        search
+      })
+    })
+
+    if (!response.ok) {
+      const data = await response.json()
+      throw new Error(data.error || `Server error: ${response.status}`)
+    }
+
+    if (!response.body) {
+      throw new Error('Streaming is unavailable.')
+    }
+
+    let answer = ''
+
+    if (response.headers.get('content-type')?.includes('text/event-stream')) {
+      answer = await readAIStream(response, updateAnswer)
+    } else {
+      const data = await response.json()
+      answer = data.text || ''
+    }
+
+    if (!answer.trim()) {
+      throw new Error('AI returned an empty response.')
+    }
+
+    updateAnswer(answer)
+
+    if (autoSpeak) speak(answer)
+
+  } catch (err) {
+    setError(err.message || 'Could not connect to TEJA AI.')
+
+    updateAnswer(
+      'I could not complete that request. Please check the server connection and try again.'
+    )
+
+  } finally {
+    setBusy(false)
+  }
+}
+
 
     const userMessage = {
       role: 'user',
