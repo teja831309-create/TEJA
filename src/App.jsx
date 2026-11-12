@@ -1,27 +1,30 @@
+
 import { useEffect, useRef, useState } from 'react'
 import './App.css'
 
+// Read streaming responses from the Cloudflare AI Worker.
 async function readAIStream(response, onText) {
+  if (!response.body) {
+    throw new Error('Streaming is unavailable.')
+  }
+
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
+
   let buffer = ''
   let completeText = ''
 
-  function processLine(line) {
-    if (!line.startsWith('data:')) return
-
-    const data = line.slice(5).trim()
-
+  function processData(data) {
     if (!data || data === '[DONE]') return
 
     try {
       const parsed = JSON.parse(data)
 
       const chunk =
-        parsed.response ||
-        parsed.choices?.[0]?.delta?.content ||
-        parsed.choices?.[0]?.message?.content ||
-        parsed.output_text ||
+        parsed.response ??
+        parsed.choices?.[0]?.delta?.content ??
+        parsed.choices?.[0]?.message?.content ??
+        parsed.output_text ??
         ''
 
       if (typeof chunk === 'string' && chunk) {
@@ -29,32 +32,55 @@ async function readAIStream(response, onText) {
         onText(completeText)
       }
     } catch {
-      // Ignore incomplete or invalid SSE events.
+      // Ignore incomplete or unsupported events.
     }
   }
 
-  while (true) {
-    const { value, done } = await reader.read()
+  function processEvent(event) {
+    const dataLines = event
+      .split('\n')
+      .filter(line => line.startsWith('data:'))
+      .map(line => line.slice(5).trim())
 
-    if (done) break
+    if (dataLines.length) {
+      processData(dataLines.join('\n'))
+      return
+    }
 
-    buffer += decoder.decode(value, { stream: true })
+    // Also support newline-delimited JSON streams.
+    const line = event.trim()
 
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
-
-    for (const line of lines) {
-      processLine(line.trim())
+    if (line) {
+      processData(line)
     }
   }
 
-  buffer += decoder.decode()
+  try {
+    while (true) {
+      const { value, done } = await reader.read()
 
-  if (buffer.trim()) {
-    processLine(buffer.trim())
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+
+      const events = buffer.split(/\r?\n\r?\n/)
+      buffer = events.pop() || ''
+
+      for (const event of events) {
+        processEvent(event)
+      }
+    }
+
+    buffer += decoder.decode()
+
+    if (buffer.trim()) {
+      processEvent(buffer)
+    }
+
+    return completeText
+  } finally {
+    reader.releaseLock()
   }
-
-  return completeText
 }
 
 const languages = [
@@ -97,21 +123,44 @@ export default function App() {
   const [error, setError] = useState('')
   const [health, setHealth] = useState('checking')
   const [autoSpeak, setAutoSpeak] = useState(false)
+
   const fileRef = useRef(null)
   const recognitionRef = useRef(null)
   const bottomRef = useRef(null)
 
+  // Check backend connection.
   useEffect(() => {
-    fetch('/api/health')
-      .then(r => r.json())
-      .then(data => setHealth(data.status === 'ok' ? 'online' : 'offline')
-      .catch(() => setHealth('offline'))
+    const controller = new AbortController()
+
+    fetch('/api/health', { signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) {
+          throw new Error('Backend unavailable')
+        }
+
+        return response.json()
+      })
+      .then(data => {
+        setHealth(data.status === 'ok' ? 'online' : 'offline')
+      })
+      .catch(err => {
+        if (err.name !== 'AbortError') {
+          setHealth('offline')
+        }
+      })
+
+    return () => controller.abort()
   }, [])
 
+  // Automatically scroll to the latest message.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    bottomRef.current?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'end'
+    })
   }, [messages, busy])
 
+  // Clean up voice features.
   useEffect(() => {
     return () => {
       recognitionRef.current?.stop()
@@ -121,6 +170,9 @@ export default function App() {
 
   function newChat() {
     window.speechSynthesis?.cancel()
+
+    recognitionRef.current?.stop()
+
     setMessages([initialMessage])
     setMessage('')
     setImage(null)
@@ -128,132 +180,63 @@ export default function App() {
     setPage('AI Chat')
   }
 
+  // Image upload.
   function chooseImage(file) {
     if (!file) return
+
     if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
       setError('Choose a JPG, PNG or WEBP image.')
       return
     }
+
     if (file.size > 8 * 1024 * 1024) {
       setError('Image must be smaller than 8 MB.')
       return
     }
 
     const reader = new FileReader()
+
     reader.onload = () => {
       const result = String(reader.result)
+
       setImage({
         preview: result,
         data: result.split(',')[1],
         mimeType: file.type
       })
+
       setError('')
     }
-    reader.onerror = () => setError('Could not read this image.')
+
+    reader.onerror = () => {
+      setError('Could not read this image.')
+    }
+
     reader.readAsDataURL(file)
   }
 
-  
-async function sendMessage() {
-  const question = message.trim()
-
-  if ((!question && !image) || busy) return
-
-  const userMessage = {
-    role: 'user',
-    text: question || 'Please describe this image.',
-    preview: image?.preview
-  }
-
-  const previousHistory = messages
-    .filter(m => ['user', 'model'].includes(m.role))
-    .slice(-12)
-    .map(m => ({ role: m.role, text: m.text }))
-
-  const currentImage = image
-
-  setMessages(old => [
-    ...old,
-    userMessage,
-    { role: 'model', text: '', sources: [] }
-  ])
-
-  setMessage('')
-  setBusy(true)
-  setError('')
-  setImage(null)
-
+  // Update the latest assistant message.
   function updateAnswer(text) {
     setMessages(old => {
       const updated = [...old]
       const last = updated.length - 1
 
-      updated[last] = {
-        ...updated[last],
-        text
+      if (last >= 0 && updated[last].role === 'model') {
+        updated[last] = {
+          ...updated[last],
+          text
+        }
       }
 
       return updated
     })
   }
 
-  try {
-    const response = await fetch('/api/chat', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        message: userMessage.text,
-        history: previousHistory,
-        image: currentImage
-          ? {
-              data: currentImage.data,
-              mimeType: currentImage.mimeType
-            }
-          : undefined,
-        search
-      })
-    })
+  // Main AI chat function.
+  async function sendMessage() {
+    const question = message.trim()
 
-    if (!response.ok) {
-      const data = await response.json()
-      throw new Error(data.error || `Server error: ${response.status}`)
-    }
-
-    if (!response.body) {
-      throw new Error('Streaming is unavailable.')
-    }
-
-    let answer = ''
-
-    if (response.headers.get('content-type')?.includes('text/event-stream')) {
-      answer = await readAIStream(response, updateAnswer)
-    } else {
-      const data = await response.json()
-      answer = data.text || ''
-    }
-
-    if (!answer.trim()) {
-      throw new Error('AI returned an empty response.')
-    }
-
-    updateAnswer(answer)
-
-    if (autoSpeak) speak(answer)
-
-  } catch (err) {
-    setError(err.message || 'Could not connect to TEJA AI.')
-
-    updateAnswer(
-      'I could not complete that request. Please check the server connection and try again.'
-    )
-
-  } finally {
-    setBusy(false)
-  }
-}
-
+    if ((!question && !image) || busy) return
 
     const userMessage = {
       role: 'user',
@@ -262,66 +245,129 @@ async function sendMessage() {
     }
 
     const previousHistory = messages
-      .filter(m => ['user', 'model'].includes(m.role))
-      .slice(-20)
-      .map(m => ({ role: m.role, text: m.text }))
+      .filter(item => ['user', 'model'].includes(item.role))
+      .slice(-12)
+      .map(item => ({
+        role: item.role,
+        text: item.text
+      }))
 
-    setMessages(old => [...old, userMessage])
+    const currentImage = image
+
+    setMessages(old => [
+      ...old,
+      userMessage,
+      {
+        role: 'model',
+        text: '',
+        sources: []
+      }
+    ])
+
     setMessage('')
     setBusy(true)
     setError('')
-
-    const currentImage = image
     setImage(null)
 
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json'
+        },
         body: JSON.stringify({
           message: userMessage.text,
           history: previousHistory,
           image: currentImage
-            ? { data: currentImage.data, mimeType: currentImage.mimeType }
+            ? {
+                data: currentImage.data,
+                mimeType: currentImage.mimeType
+              }
             : undefined,
           search
         })
       })
 
-      const data = await response.json()
-
       if (!response.ok) {
-        throw new Error(data.error || `Server error: ${response.status}`)
-      }
+        let errorMessage = `Server error: ${response.status}`
 
-      const answer = {
-        role: 'model',
-        text: data.text || 'No answer received.',
-        sources: Array.isArray(data.sources) ? data.sources : []
-      }
-
-      setMessages(old => [...old, answer])
-
-      if (autoSpeak) speak(answer.text)
-    } catch (err) {
-      setError(err.message || 'Could not connect to TEJA AI.')
-      setMessages(old => [
-        ...old,
-        {
-          role: 'model',
-          text: 'I could not complete that request. Please check the server connection and try again.'
+        try {
+          const data = await response.json()
+          errorMessage = data.error || errorMessage
+        } catch {
+          // Keep the HTTP error message.
         }
-      ])
+
+        throw new Error(errorMessage)
+      }
+
+      const contentType =
+        response.headers.get('content-type') || ''
+
+      let answer = ''
+      let sources = []
+
+      if (contentType.includes('text/event-stream')) {
+        answer = await readAIStream(response, updateAnswer)
+      } else {
+        const data = await response.json()
+
+        answer =
+          data.text ||
+          data.response ||
+          data.output_text ||
+          ''
+
+        sources = Array.isArray(data.sources)
+          ? data.sources
+          : []
+      }
+
+      if (!answer.trim()) {
+        throw new Error('AI returned an empty response.')
+      }
+
+      setMessages(old => {
+        const updated = [...old]
+        const last = updated.length - 1
+
+        if (last >= 0 && updated[last].role === 'model') {
+          updated[last] = {
+            ...updated[last],
+            text: answer,
+            sources
+          }
+        }
+
+        return updated
+      })
+
+      if (autoSpeak) {
+        speak(answer)
+      }
+    } catch (err) {
+      setError(
+        err.message || 'Could not connect to TEJA AI.'
+      )
+
+      updateAnswer(
+        'I could not complete that request. Please check the server connection and try again.'
+      )
     } finally {
       setBusy(false)
     }
   }
 
+  // Voice input.
   function startVoice() {
-    const Speech = window.SpeechRecognition || window.webkitSpeechRecognition
+    const Speech =
+      window.SpeechRecognition ||
+      window.webkitSpeechRecognition
 
     if (!Speech) {
-      setError('Speech recognition is unavailable in this browser. Try Chrome.')
+      setError(
+        'Speech recognition is unavailable in this browser. Try Chrome.'
+      )
       return
     }
 
@@ -332,20 +378,30 @@ async function sendMessage() {
     }
 
     const recognition = new Speech()
+
     recognition.lang = language
     recognition.interimResults = true
     recognition.continuous = false
 
-    recognition.onstart = () => setListening(true)
-    recognition.onend = () => setListening(false)
+    recognition.onstart = () => {
+      setListening(true)
+      setError('')
+    }
+
+    recognition.onend = () => {
+      setListening(false)
+    }
+
     recognition.onerror = event => {
       setListening(false)
       setError(`Voice error: ${event.error}`)
     }
+
     recognition.onresult = event => {
       const transcript = Array.from(event.results)
         .map(result => result[0].transcript)
         .join('')
+
       setMessage(transcript)
     }
 
@@ -353,17 +409,25 @@ async function sendMessage() {
     recognition.start()
   }
 
+  // Voice playback.
   function speak(text) {
     if (!('speechSynthesis' in window)) {
-      setError('Speech playback is unavailable in this browser.')
+      setError(
+        'Speech playback is unavailable in this browser.'
+      )
       return
     }
 
+    if (!text?.trim()) return
+
     window.speechSynthesis.cancel()
+
     const utterance = new SpeechSynthesisUtterance(text)
+
     utterance.lang = language
     utterance.rate = 0.96
     utterance.pitch = 1
+
     window.speechSynthesis.speak(utterance)
   }
 
@@ -371,6 +435,7 @@ async function sendMessage() {
     window.speechSynthesis?.cancel()
   }
 
+  // Enter sends; Shift + Enter creates a new line.
   function handleKeyDown(event) {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
@@ -389,44 +454,84 @@ async function sendMessage() {
           </div>
         </div>
 
-        <button className="new-chat" onClick={newChat}>＋ New chat</button>
+        <button className="new-chat" onClick={newChat}>
+          ＋ New chat
+        </button>
 
         <div className="nav-label">WORKSPACE</div>
+
         {['AI Chat', 'Camera & Vision', 'Research'].map(item => (
           <button
             key={item}
             className={`nav-item ${page === item ? 'active' : ''}`}
             onClick={() => {
               setPage(item)
-              if (item === 'Research') setSearch(true)
+
+              if (item === 'Research') {
+                setSearch(true)
+              }
             }}
           >
-            {item === 'AI Chat' ? '◈' : item === 'Camera & Vision' ? '▧' : '◎'}
+            {item === 'AI Chat'
+              ? '◈'
+              : item === 'Camera & Vision'
+                ? '▧'
+                : '◎'}
+
             <span>{item}</span>
           </button>
         ))}
 
         <div className="sidebar-bottom">
           <span className={`status-dot ${health}`} />
-          {health === 'online' ? 'Backend online' : health === 'checking' ? 'Connecting...' : 'Backend offline'}
-          <small>Powered by Google Gemini</small>
+
+          {health === 'online'
+            ? 'Backend online'
+            : health === 'checking'
+              ? 'Connecting...'
+              : 'Backend offline'}
+
+          <small>Powered by Cloudflare Workers AI</small>
         </div>
       </aside>
 
       <main className="main-area">
         <header className="topbar">
-          <div className="mobile-brand">✦ TEJA AI STUDIO</div>
-          <span className="workspace-tag">PERSONAL AI WORKSPACE</span>
-          <button className="icon-button" onClick={newChat} title="New chat">＋</button>
+          <div className="mobile-brand">
+            ✦ TEJA AI STUDIO
+          </div>
+
+          <span className="workspace-tag">
+            PERSONAL AI WORKSPACE
+          </span>
+
+          <button
+            className="icon-button"
+            onClick={newChat}
+            title="New chat"
+          >
+            ＋
+          </button>
         </header>
 
         <section className="content">
           {page === 'Camera & Vision' && (
             <div className="feature-heading">
-              <span className="eyebrow">VISUAL INTELLIGENCE</span>
+              <span className="eyebrow">
+                VISUAL INTELLIGENCE
+              </span>
+
               <h1>Camera & Vision</h1>
-              <p>Upload a photo or capture one, then ask Gemini to understand it.</p>
-              <button className="primary" onClick={() => fileRef.current?.click()}>
+
+              <p>
+                Upload a photo or capture one, then ask TEJA AI
+                to understand it.
+              </p>
+
+              <button
+                className="primary"
+                onClick={() => fileRef.current?.click()}
+              >
                 ＋ Choose photo or camera
               </button>
             </div>
@@ -434,18 +539,35 @@ async function sendMessage() {
 
           {page === 'Research' && (
             <div className="feature-heading">
-              <span className="eyebrow">WEB-GROUNDED AI</span>
+              <span className="eyebrow">
+                WEB-GROUNDED AI
+              </span>
+
               <h1>Research mode</h1>
-              <p>Ask a question with Google Search grounding enabled. Available sources are shown with the answer.</p>
+
+              <p>
+                Ask a question with the web search option enabled.
+                Available sources are shown with the answer when
+                the backend provides them.
+              </p>
             </div>
           )}
 
           {page === 'AI Chat' && messages.length === 1 && (
             <div className="welcome">
               <div className="welcome-symbol">✦</div>
-              <span className="eyebrow">YOUR AI WORKSPACE</span>
+
+              <span className="eyebrow">
+                YOUR AI WORKSPACE
+              </span>
+
               <h1>What can I help you with?</h1>
-              <p>Ask questions, explore ideas, understand images and create something new.</p>
+
+              <p>
+                Ask questions, explore ideas, understand images
+                and create something new.
+              </p>
+
               <div className="suggestions">
                 {[
                   'Explain a difficult topic simply',
@@ -453,7 +575,12 @@ async function sendMessage() {
                   'Write and debug some code',
                   'Research a topic with sources'
                 ].map(item => (
-                  <button key={item} onClick={() => setMessage(item)}>{item} ↗</button>
+                  <button
+                    key={item}
+                    onClick={() => setMessage(item)}
+                  >
+                    {item} ↗
+                  </button>
                 ))}
               </div>
             </div>
@@ -461,22 +588,35 @@ async function sendMessage() {
 
           <div className="chat-area">
             {messages.map((item, index) => (
-              <article className={`message ${item.role}`} key={index}>
+              <article
+                className={`message ${item.role}`}
+                key={index}
+              >
                 <div className="message-avatar">
                   {item.role === 'user' ? 'Y' : '✦'}
                 </div>
+
                 <div className="message-body">
                   <div className="message-name">
-                    {item.role === 'user' ? 'You' : 'TEJA AI'}
+                    {item.role === 'user'
+                      ? 'You'
+                      : 'TEJA AI'}
                   </div>
+
                   {item.preview && (
-                    <img className="photo-preview" src={item.preview} alt="Uploaded image" />
+                    <img
+                      className="photo-preview"
+                      src={item.preview}
+                      alt="Uploaded image"
+                    />
                   )}
+
                   <p>{item.text}</p>
 
                   {item.sources?.length > 0 && (
                     <div className="sources">
                       <strong>Sources</strong>
+
                       {item.sources.map((source, i) => (
                         <a
                           key={i}
@@ -492,34 +632,59 @@ async function sendMessage() {
 
                   {item.role === 'model' && index !== 0 && (
                     <div className="message-actions">
-                      <button onClick={() => speak(item.text)}>🔊 Listen</button>
-                      <button onClick={() => navigator.clipboard?.writeText(item.text)}>Copy</button>
+                      <button
+                        onClick={() => speak(item.text)}
+                        disabled={!item.text}
+                      >
+                        🔊 Listen
+                      </button>
+
+                      <button
+                        onClick={() =>
+                          navigator.clipboard?.writeText(item.text)
+                        }
+                        disabled={!item.text}
+                      >
+                        Copy
+                      </button>
                     </div>
                   )}
                 </div>
               </article>
             ))}
+
             {busy && (
               <div className="loading-row">
                 <span className="loader" />
                 TEJA AI is thinking...
               </div>
             )}
+
             <div ref={bottomRef} />
           </div>
 
           {error && (
             <div className="error-message">
               {error}
-              <button onClick={() => setError('')}>Dismiss</button>
+
+              <button onClick={() => setError('')}>
+                Dismiss
+              </button>
             </div>
           )}
 
           {image && (
             <div className="attachment-preview">
-              <img src={image.preview} alt="Selected attachment" />
+              <img
+                src={image.preview}
+                alt="Selected attachment"
+              />
+
               <span>Image ready to send</span>
-              <button onClick={() => setImage(null)}>✕</button>
+
+              <button onClick={() => setImage(null)}>
+                ✕
+              </button>
             </div>
           )}
 
@@ -535,7 +700,13 @@ async function sendMessage() {
 
             <div className="composer-tools">
               <div className="tool-group">
-                <button onClick={() => fileRef.current?.click()} title="Attach image">＋ Image</button>
+                <button
+                  onClick={() => fileRef.current?.click()}
+                  title="Attach image"
+                >
+                  ＋ Image
+                </button>
+
                 <button
                   className={listening ? 'recording' : ''}
                   onClick={startVoice}
@@ -543,39 +714,61 @@ async function sendMessage() {
                 >
                   {listening ? '■ Stop' : '🎙 Voice'}
                 </button>
+
                 <select
                   aria-label="Voice language"
                   value={language}
-                  onChange={event => setLanguage(event.target.value)}
+                  onChange={event =>
+                    setLanguage(event.target.value)
+                  }
                 >
                   {languages.map(([name, code]) => (
-                    <option value={code} key={code}>{name}</option>
+                    <option value={code} key={code}>
+                      {name}
+                    </option>
                   ))}
                 </select>
+
                 <label className="search-toggle">
                   <input
                     type="checkbox"
                     checked={search}
-                    onChange={event => setSearch(event.target.checked)}
+                    onChange={event =>
+                      setSearch(event.target.checked)
+                    }
                   />
                   Web search
                 </label>
+
                 <label className="search-toggle">
                   <input
                     type="checkbox"
                     checked={autoSpeak}
-                    onChange={event => setAutoSpeak(event.target.checked)}
+                    onChange={event =>
+                      setAutoSpeak(event.target.checked)
+                    }
                   />
                   Auto voice
                 </label>
               </div>
-              <button className="send-button" onClick={sendMessage} disabled={busy || (!message.trim() && !image)}>
+
+              <button
+                className="send-button"
+                onClick={sendMessage}
+                disabled={
+                  busy || (!message.trim() && !image)
+                }
+              >
                 {busy ? 'Thinking...' : 'Send ↑'}
               </button>
             </div>
+
             <div className="composer-note">
               AI can make mistakes. Verify important information.
-              <button onClick={stopSpeaking}>Stop voice</button>
+
+              <button onClick={stopSpeaking}>
+                Stop voice
+              </button>
             </div>
           </div>
 
@@ -595,3 +788,6 @@ async function sendMessage() {
     </div>
   )
 }
+
+      
+          
