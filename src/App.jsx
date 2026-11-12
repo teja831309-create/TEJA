@@ -1,6 +1,62 @@
 import { useEffect, useRef, useState } from 'react'
 import './App.css'
 
+async function readAIStream(response, onText) {
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let completeText = ''
+
+  function processLine(line) {
+    if (!line.startsWith('data:')) return
+
+    const data = line.slice(5).trim()
+
+    if (!data || data === '[DONE]') return
+
+    try {
+      const parsed = JSON.parse(data)
+
+      const chunk =
+        parsed.response ||
+        parsed.choices?.[0]?.delta?.content ||
+        parsed.choices?.[0]?.message?.content ||
+        parsed.output_text ||
+        ''
+
+      if (typeof chunk === 'string' && chunk) {
+        completeText += chunk
+        onText(completeText)
+      }
+    } catch {
+      // Ignore incomplete or invalid SSE events.
+    }
+  }
+
+  while (true) {
+    const { value, done } = await reader.read()
+
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      processLine(line.trim())
+    }
+  }
+
+  buffer += decoder.decode()
+
+  if (buffer.trim()) {
+    processLine(buffer.trim())
+  }
+
+  return completeText
+}
+
 const languages = [
   ['English (India)', 'en-IN'],
   ['English (US)', 'en-US'],
