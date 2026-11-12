@@ -48,7 +48,7 @@ export default function App() {
   useEffect(() => {
     fetch('/api/health')
       .then(r => r.json())
-      .then(data => setHealth(data.status === 'online' ? 'online' : 'offline'))
+      .then(data => setHealth(data.status === 'ok' ? 'online' : 'offline')
       .catch(() => setHealth('offline'))
   }, [])
 
