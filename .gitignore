@@ -1,0 +1,7 @@
+node_modules
+.env
+dist
+.DS_Store
+
+server.js.backup
+test.txt

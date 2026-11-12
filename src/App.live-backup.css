@@ -1,0 +1,262 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #080b14;
+  color: #f5f5ff;
+  font-family: system-ui, sans-serif;
+}
+
+button, textarea, input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+  border: 0;
+  color: #f5f5ff;
+  background: #20263a;
+  border-radius: 10px;
+  padding: 11px 15px;
+  transition: .2s;
+}
+
+button:hover {
+  background: #343d5a;
+}
+
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: 255px;
+  min-width: 255px;
+  background: #101522;
+  border-right: 1px solid #252c40;
+  padding: 22px 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sidebar h2 {
+  font-size: 19px;
+  margin: 0 0 20px;
+  color: #a99bff;
+}
+
+.sidebar .nav-title {
+  color: #8992aa;
+  font-size: 11px;
+  letter-spacing: 2px;
+  margin: 20px 8px 5px;
+}
+
+.sidebar > button {
+  text-align: left;
+  background: transparent;
+}
+
+.sidebar > button.active {
+  background: #302a56;
+  color: #c7baff;
+}
+
+.sidebar small {
+  margin-top: auto;
+  color: #858da4;
+  padding: 15px 5px;
+}
+
+.main-area {
+  flex: 1;
+  min-width: 0;
+}
+
+header {
+  height: 65px;
+  border-bottom: 1px solid #252c40;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 30px;
+  color: #c9c4ff;
+  font-weight: 700;
+}
+
+header span {
+  color: #69dba8;
+  font-size: 12px;
+}
+
+.content {
+  max-width: 950px;
+  margin: auto;
+  padding: 35px 28px;
+}
+
+.content h1 {
+  font-size: 32px;
+  margin-bottom: 5px;
+}
+
+.subtitle {
+  color: #929bb4;
+  margin-top: 5px;
+}
+
+.chat-area {
+  min-height: 330px;
+  margin: 30px 0 20px;
+}
+
+.message {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  background: #121a2b;
+  border: 1px solid #27324a;
+  border-radius: 15px;
+  padding: 16px;
+  margin-bottom: 12px;
+}
+
+.message b {
+  color: #a99bff;
+}
+
+.message p {
+  line-height: 1.6;
+  margin: 0;
+  color: #e1e5f5;
+  white-space: pre-wrap;
+}
+
+.message button {
+  align-self: flex-start;
+  font-size: 12px;
+  margin-top: 5px;
+}
+
+.composer, .panel {
+  background: #121a2b;
+  border: 1px solid #303b55;
+  border-radius: 17px;
+  padding: 18px;
+}
+
+textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 90px;
+  background: #0b1120;
+  border: 1px solid #303b55;
+  border-radius: 12px;
+  padding: 15px;
+  color: white;
+  outline: none;
+  margin-bottom: 12px;
+}
+
+textarea:focus {
+  border-color: #9482ff;
+}
+
+.composer > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.primary {
+  background: #725cf4;
+}
+
+.primary:hover {
+  background: #8a77ff;
+}
+
+.panel {
+  margin-top: 28px;
+}
+
+.panel h2 {
+  margin-top: 0;
+}
+
+.panel p {
+  color: #a9b2ca;
+  line-height: 1.6;
+}
+
+.panel iframe {
+  width: 100%;
+  height: 400px;
+  background: white;
+  border: 0;
+  border-radius: 12px;
+  margin: 15px 0;
+}
+
+.photo-preview {
+  display: block;
+  width: 100%;
+  max-height: 400px;
+  object-fit: contain;
+  margin-top: 20px;
+  border-radius: 12px;
+}
+
+footer {
+  text-align: center;
+  color: #68738e;
+  font-size: 12px;
+  padding: 35px 5px;
+}
+
+@media (max-width: 700px) {
+  .app-shell {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    width: 100%;
+    min-width: 0;
+    padding: 12px;
+    gap: 6px;
+  }
+
+  .sidebar h2 {
+    margin: 5px;
+  }
+
+  .sidebar .nav-title, .sidebar small {
+    display: none;
+  }
+
+  .sidebar button {
+    display: inline-block;
+    width: auto;
+  }
+
+  .sidebar {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  header {
+    padding: 0 15px;
+  }
+
+  .content {
+    padding: 22px 15px;
+  }
+
+  .content h1 {
+    font-size: 26px;
+  }
+}
