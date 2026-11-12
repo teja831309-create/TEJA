@@ -1,5 +1,4 @@
 
-
 const MODEL = "@cf/google/gemma-4-26b-a4b-it";
 
 const cors = {
@@ -18,6 +17,19 @@ function json(data, status = 200) {
   });
 }
 
+function getCurrentTime() {
+  const now = new Date();
+
+  return {
+    utc: now.toISOString(),
+    india: new Intl.DateTimeFormat("en-IN", {
+      timeZone: "Asia/Kolkata",
+      dateStyle: "full",
+      timeStyle: "long"
+    }).format(now)
+  };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -30,7 +42,9 @@ export default {
       return json({
         status: "ok",
         app: "TEJA AI STUDIO",
-        ai: !!env.AI
+        ai: !!env.AI,
+        model: MODEL,
+        liveClock: true
       });
     }
 
@@ -42,33 +56,67 @@ export default {
           return json({ error: "AI binding missing" }, 500);
         }
 
+        const message = String(
+          body.message || body.prompt || ""
+        ).trim();
+
         const history = Array.isArray(body.history)
           ? body.history
           : [];
 
-        const messages = history.map(item => ({
-          role: item.role === "model" ? "assistant" : item.role,
-          content: item.content || item.text || ""
-        })).filter(item =>
-          ["user", "assistant", "system"].includes(item.role)
-        );
-
-        const message = body.message || body.prompt || "";
-
-        if (message.trim()) {
-          messages.push({
-            role: "user",
-            content: message
-          });
-        }
-
-        if (!messages.length) {
+        if (!message && !history.length) {
           return json({ error: "Message is empty" }, 400);
         }
 
+        const clock = getCurrentTime();
+
+        const systemPrompt = `
+You are TEJA AI STUDIO, an intelligent and honest AI assistant.
+
+CURRENT DATE AND TIME:
+UTC: ${clock.utc}
+India: ${clock.india}
+India timezone: Asia/Kolkata
+
+IMPORTANT RULES:
+1. Always use the supplied current date when asked today's date.
+2. Never claim the date is May 14, 2024 or another outdated date.
+3. Never invent current events, live prices, news, weather or statistics.
+4. You do not have live internet search unless a search tool is explicitly provided.
+5. If information requires live internet access, honestly explain this limitation.
+6. Give accurate, helpful and detailed answers.
+7. Follow the user's language and communication style.
+8. Never pretend to have performed actions you did not perform.
+9. Be friendly, natural and conversational.
+10. Your name is TEJA AI STUDIO.
+`;
+
+        const messages = [
+          {
+            role: "system",
+            content: systemPrompt
+          },
+
+          ...history
+            .filter(item =>
+              ["user", "assistant", "model"].includes(item.role)
+            )
+            .slice(-20)
+            .map(item => ({
+              role: item.role === "model" ? "assistant" : item.role,
+              content: String(item.content || item.text || "")
+            }))
+            .filter(item => item.content.trim()),
+
+          ...(message ? [{
+            role: "user",
+            content: message
+          }] : [])
+        ];
+
         const result = await env.AI.run(MODEL, {
           messages,
-          max_tokens: 1200
+          max_tokens: 1800
         });
 
         let answer =
@@ -84,18 +132,19 @@ export default {
         }
 
         if (typeof answer !== "string" || !answer.trim()) {
-          console.error("Empty AI result:", JSON.stringify(result));
+          console.error("Empty AI result:", result);
+
           return json({
-            error: "AI returned empty text",
-            debug: result
+            error: "AI returned empty text"
           }, 502);
         }
 
-        // IMPORTANT: Frontend expects "text"
         return json({
           text: answer.trim(),
           sources: [],
-          success: true
+          success: true,
+          model: MODEL,
+          timestamp: clock.utc
         });
 
       } catch (error) {
@@ -111,7 +160,11 @@ export default {
       return env.ASSETS.fetch(request);
     }
 
-    return new Response("Not Found", { status: 404 });
+    return new Response("Not Found", {
+      status: 404,
+      headers: cors
+    });
   }
 };
+
 
