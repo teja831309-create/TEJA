@@ -44,7 +44,8 @@ export default {
         app: "TEJA AI STUDIO",
         ai: !!env.AI,
         model: MODEL,
-        liveClock: true
+        liveClock: true,
+        streaming: true
       });
     }
 
@@ -101,7 +102,7 @@ IMPORTANT RULES:
             .filter(item =>
               ["user", "assistant", "model"].includes(item.role)
             )
-            .slice(-20)
+            .slice(-12)
             .map(item => ({
               role: item.role === "model" ? "assistant" : item.role,
               content: String(item.content || item.text || "")
@@ -114,37 +115,20 @@ IMPORTANT RULES:
           }] : [])
         ];
 
-        const result = await env.AI.run(MODEL, {
+        const stream = await env.AI.run(MODEL, {
           messages,
-          max_tokens: 1800
+          max_tokens: 1200,
+          stream: true
         });
 
-        let answer =
-          result?.response ||
-          result?.choices?.[0]?.message?.content ||
-          result?.output_text ||
-          "";
-
-        if (Array.isArray(answer)) {
-          answer = answer.map(x =>
-            typeof x === "string" ? x : x?.text || ""
-          ).join("");
-        }
-
-        if (typeof answer !== "string" || !answer.trim()) {
-          console.error("Empty AI result:", result);
-
-          return json({
-            error: "AI returned empty text"
-          }, 502);
-        }
-
-        return json({
-          text: answer.trim(),
-          sources: [],
-          success: true,
-          model: MODEL,
-          timestamp: clock.utc
+        return new Response(stream, {
+          status: 200,
+          headers: {
+            ...cors,
+            "Content-Type": "text/event-stream; charset=utf-8",
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no"
+          }
         });
 
       } catch (error) {
@@ -167,4 +151,6 @@ IMPORTANT RULES:
   }
 };
 
+ 
 
+          
